@@ -10,8 +10,8 @@ logging.basicConfig(filename='trading_log.txt', level=logging.INFO, format='%(as
 
 # Configure API for Tokocrypto
 exchange = ccxt.tokocrypto({
-    'apiKey': 'YOUR_API_KEY',
-    'secret': 'YOUR_SECRET_KEY',
+    'apiKey': '7165c7F9C775FC2AA9F49957A532Fe1BYq5PapHYxx34N8Ujuk7HMd8F0Uc1tGNY',
+    'secret': '19F6aC8fF30c1CDAF4945Bde4073cA2BJpE5bOHwRRPZhsnp8UGgVlpbbmUWrla7',
     'enableRateLimit': True
 })
 
