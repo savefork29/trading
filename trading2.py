@@ -11,8 +11,8 @@ logging.info("Memulai bot trading...")
 
 # Koneksi ke Tokocrypto
 exchange = ccxt.tokocrypto({
-    'apiKey': 'API_KEY_ANDA',
-    'secret': 'SECRET_KEY_ANDA',
+    'apiKey': '7165c7F9C775FC2AA9F49957A532Fe1BYq5PapHYxx34N8Ujuk7HMd8F0Uc1tGNY',
+    'secret': '19F6aC8fF30c1CDAF4945Bde4073cA2BJpE5bOHwRRPZhsnp8UGgVlpbbmUWrla7',
 })
 
 symbol = 'BNB/USDT'
