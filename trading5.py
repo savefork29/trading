@@ -91,8 +91,8 @@ class TokocryptoClient:
         return 100  # Angka ini bisa Anda ubah sesuai saldo di akun Anda
 
 # Masukkan API Key dan Secret Key
-api_key = "YOUR_API_KEY"
-secret_key = "YOUR_SECRET_KEY"
+api_key = "7165c7F9C775FC2AA9F49957A532Fe1BYq5PapHYxx34N8Ujuk7HMd8F0Uc1tGNY"
+secret_key = "19F6aC8fF30c1CDAF4945Bde4073cA2BJpE5bOHwRRPZhsnp8UGgVlpbbmUWrla7"
 
 # Inisialisasi client dan bot trading
 client = TokocryptoClient(api_key, secret_key)
