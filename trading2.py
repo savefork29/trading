@@ -17,6 +17,24 @@ if SEED_PHRASE is None:
 pending_transactions = {}
 
 # Fungsi untuk konversi seed phrase ke private key
+def menu_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()  # Memberikan tanggapan cepat kepada pengguna agar bot tidak terlihat "diam"
+
+    if query.data == "balance":
+        balance = get_wallet_balance(OWNER_WALLET_ADDRESS)
+        query.edit_message_text(f"Saldo Anda adalah {balance:.2f} AXM")
+    elif query.data == "deposit":
+        query.edit_message_text(f"Silakan kirim AXM ke alamat berikut:\n{OWNER_WALLET_ADDRESS}")
+    elif query.data == "withdraw":
+        query.edit_message_text("Untuk penarikan, hubungi admin dengan format: /withdraw <jumlah>")
+    elif query.data == "buy":
+        query.edit_message_text("Untuk membeli AXM, gunakan perintah: /buy <jumlah_usd>")
+    elif query.data == "sell":
+        query.edit_message_text("Untuk menjual AXM, hubungi admin dengan format: /sell <jumlah>")
+    else:
+        query.edit_message_text("Pilihan tidak valid.")
+
 def get_private_key_from_seed(seed_phrase):
     if not seed_phrase:
         raise ValueError("Seed phrase tidak valid atau kosong.")
@@ -214,7 +232,7 @@ def main():
     dispatcher.add_handler(CommandHandler("reject", reject_transaction))
     
     # Inline keyboard handler
-    dispatcher.add_handler(CallbackQueryHandler(menu_handler))
+    dispatcher.add_handler(CallbackQueryHandler(menu_handler))  # Fungsi yang didefinisikan di atas
 
     # Reply keyboard handler (menangani teks)
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
