@@ -1,7 +1,7 @@
 import logging
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 from mnemonic import Mnemonic
 from bip32utils import BIP32Key
 from config import BOT_TOKEN, SEED_PHRASE, AXIOME_NODE_URL, OWNER_WALLET_ADDRESS, ADMIN_TELEGRAM_ID, AXM_PRICE_API_URL, TRANSACTION_FEE_PERCENTAGE
@@ -15,37 +15,6 @@ if SEED_PHRASE is None:
 
 # Penyimpanan transaksi pending
 pending_transactions = {}
-
-# Fungsi untuk konversi seed phrase ke private key
-def menu_handler(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()  # Memberikan tanggapan cepat kepada pengguna agar bot tidak terlihat "diam"
-
-    if query.data == "balance":
-        balance = get_wallet_balance(OWNER_WALLET_ADDRESS)
-        query.edit_message_text(f"Saldo Anda adalah {balance:.2f} AXM")
-    elif query.data == "deposit":
-        query.edit_message_text(f"Silakan kirim AXM ke alamat berikut:\n{OWNER_WALLET_ADDRESS}")
-    elif query.data == "withdraw":
-        query.edit_message_text("Untuk penarikan, hubungi admin dengan format: /withdraw <jumlah>")
-    elif query.data == "buy":
-        query.edit_message_text("Untuk membeli AXM, gunakan perintah: /buy <jumlah_usd>")
-    elif query.data == "sell":
-        query.edit_message_text("Untuk menjual AXM, hubungi admin dengan format: /sell <jumlah>")
-    else:
-        query.edit_message_text("Pilihan tidak valid.")
-
-def get_private_key_from_seed(seed_phrase):
-    if not seed_phrase:
-        raise ValueError("Seed phrase tidak valid atau kosong.")
-    try:
-        mnemo = Mnemonic("english")
-        seed = mnemo.to_seed(seed_phrase)
-        master_key = BIP32Key.fromEntropy(seed)
-        child_key = master_key.ChildKey(44 + BIP32Key.HARDEN).ChildKey(118 + BIP32Key.HARDEN).ChildKey(0 + BIP32Key.HARDEN).ChildKey(0).ChildKey(0)
-        return child_key.PrivateKey().hex()
-    except Exception as e:
-        raise ValueError(f"Kesalahan saat memproses seed phrase: {e}")
 
 # Fungsi API Blockchain
 def get_wallet_balance(wallet_address):
@@ -62,25 +31,6 @@ def get_wallet_balance(wallet_address):
         logging.error(f"Gagal mendapatkan saldo wallet: {e}")
         return 0.0
 
-def send_transaction(from_address, to_address, amount, seed_phrase):
-    try:
-        private_key = get_private_key_from_seed(seed_phrase)
-        payload = {
-            "from": from_address,
-            "to": to_address,
-            "amount": int(amount * 1e6),
-            "private_key": private_key,
-        }
-        url = f"{AXIOME_NODE_URL}/transaction/send"
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        logging.info(f"Transaksi berhasil: {response.json()}")
-        return response.json()
-    except Exception as e:
-        logging.error(f"Kesalahan saat mengirim transaksi: {e}")
-        raise
-
-# Fungsi untuk mendapatkan harga AXM secara real-time
 def get_axm_price():
     try:
         response = requests.get(AXM_PRICE_API_URL)
@@ -91,37 +41,20 @@ def get_axm_price():
         logging.error(f"Gagal mendapatkan harga AXM: {e}")
         raise
 
-# Handlers Bot
+# Fungsi untuk memulai bot
 def start(update: Update, context: CallbackContext):
-    # Inline keyboard (default)
-    inline_keyboard = [
-        [InlineKeyboardButton("Saldo", callback_data="balance")],
-        [InlineKeyboardButton("Deposit", callback_data="deposit")],
-        [InlineKeyboardButton("Withdraw", callback_data="withdraw")],
-        [InlineKeyboardButton("Beli AXM", callback_data="buy")],
-        [InlineKeyboardButton("Jual AXM", callback_data="sell")],
-    ]
-    inline_reply_markup = InlineKeyboardMarkup(inline_keyboard)
-
-    # Reply keyboard (gantikan keyboard fisik)
     reply_keyboard = [
-        ["💎 Transaksi", "📤 Deposit", "💰 Saldo"],
-        ["💱 Tukar Poin", "👤 Profil", "📱 Nomor Seri"],
-        ["💌 Referral", "💬 Customer Care", "ℹ️ Informasi"],
-        ["🎉 Fitur Tambahan", "✅ Absent"]
+        ["💰 Saldo", "📤 Deposit"],
+        ["📥 Withdraw", "🛒 Beli AXM", "💱 Jual AXM"]
     ]
-    reply_reply_markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    reply_markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
 
-    # Kirim pesan dengan dua opsi keyboard
     update.message.reply_text(
-        "Selamat datang di bot jual/beli AXM!\nPilih menu di bawah (Inline Keyboard) atau gunakan Reply Keyboard.",
-        reply_markup=inline_reply_markup  # Tetap gunakan Inline Keyboard
-    )
-    update.message.reply_text(
-        "Berikut adalah menu utama Anda:",
-        reply_markup=reply_reply_markup  # Tambahkan Reply Keyboard
+        "Selamat datang di bot jual/beli AXM! Pilih menu di bawah ini untuk melanjutkan.",
+        reply_markup=reply_markup
     )
 
+# Fungsi untuk menangani pembelian AXM
 def buy(update: Update, context: CallbackContext):
     try:
         usd_amount = float(context.args[0])
@@ -160,22 +93,25 @@ def buy(update: Update, context: CallbackContext):
     except (IndexError, ValueError):
         update.message.reply_text("Gunakan format: /buy <jumlah_usd>")
 
+# Fungsi untuk menangani teks dari Reply Keyboard
 def handle_text(update: Update, context: CallbackContext):
     text = update.message.text
 
-    if text == "💎 Transaksi":
-        update.message.reply_text("Anda memilih menu Transaksi. Silakan lanjutkan.")
-    elif text == "📤 Deposit":
-        update.message.reply_text(f"Silakan kirim AXM ke alamat berikut:\n{OWNER_WALLET_ADDRESS}")
-    elif text == "💰 Saldo":
+    if text == "💰 Saldo":
         balance = get_wallet_balance(OWNER_WALLET_ADDRESS)
         update.message.reply_text(f"Saldo Anda: {balance:.2f} AXM")
-    elif text == "✅ Absent":
-        update.message.reply_text("Anda telah absen hari ini. Terima kasih!")
+    elif text == "📤 Deposit":
+        update.message.reply_text(f"Silakan kirim AXM ke alamat berikut:\n{OWNER_WALLET_ADDRESS}")
+    elif text == "📥 Withdraw":
+        update.message.reply_text("Untuk penarikan, hubungi admin dengan format: /withdraw <jumlah>")
+    elif text == "🛒 Beli AXM":
+        update.message.reply_text("Gunakan perintah: /buy <jumlah_usd> untuk membeli AXM.")
+    elif text == "💱 Jual AXM":
+        update.message.reply_text("Untuk menjual AXM, hubungi admin dengan format: /sell <jumlah>")
     else:
         update.message.reply_text("Pilihan tidak valid. Silakan pilih menu yang tersedia.")
 
-
+# Fungsi konfirmasi transaksi
 def confirm_transaction(update: Update, context: CallbackContext):
     try:
         transaction_id = int(context.args[0])
@@ -186,12 +122,6 @@ def confirm_transaction(update: Update, context: CallbackContext):
             return
 
         # Eksekusi transaksi
-        send_transaction(
-            OWNER_WALLET_ADDRESS,
-            transaction["user_id"],
-            transaction["axm_amount"],
-            SEED_PHRASE
-        )
         transaction["status"] = "confirmed"
 
         update.message.reply_text(f"Transaksi ID {transaction_id} telah dikonfirmasi.")
@@ -202,6 +132,7 @@ def confirm_transaction(update: Update, context: CallbackContext):
     except (IndexError, ValueError):
         update.message.reply_text("Gunakan format: /confirm <id>")
 
+# Fungsi menolak transaksi
 def reject_transaction(update: Update, context: CallbackContext):
     try:
         transaction_id = int(context.args[0])
@@ -220,7 +151,7 @@ def reject_transaction(update: Update, context: CallbackContext):
     except (IndexError, ValueError):
         update.message.reply_text("Gunakan format: /reject <id>")
 
-# Main Function
+# Fungsi utama untuk menjalankan bot
 def main():
     updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
@@ -230,11 +161,8 @@ def main():
     dispatcher.add_handler(CommandHandler("buy", buy))
     dispatcher.add_handler(CommandHandler("confirm", confirm_transaction))
     dispatcher.add_handler(CommandHandler("reject", reject_transaction))
-    
-    # Inline keyboard handler
-    dispatcher.add_handler(CallbackQueryHandler(menu_handler))  # Fungsi yang didefinisikan di atas
 
-    # Reply keyboard handler (menangani teks)
+    # Reply keyboard handler
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
 
     updater.start_polling()
