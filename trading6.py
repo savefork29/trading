@@ -1,109 +1,246 @@
-
-import ccxt
-import pandas as pd
-import numpy as np
-import time
 import logging
+import requests
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackContext, Filters, CallbackQueryHandler
+from config import BOT_TOKEN, ADMIN_TELEGRAM_ID, USDT_BEP20_ADDRESS, PAYPAL_ADDRESS, AXM_PRICE_API_URL
 
 # Konfigurasi logging
-logging.basicConfig(level=logging.INFO)
-logging.info("Memulai bot trading...")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Koneksi ke Tokocrypto
-exchange = ccxt.tokocrypto({
-    'apiKey': '7165c7F9C775FC2AA9F49957A532Fe1BYq5PapHYxx34N8Ujuk7HMd8F0Uc1tGNY',
-    'secret': '19F6aC8fF30c1CDAF4945Bde4073cA2BJpE5bOHwRRPZhsnp8UGgVlpbbmUWrla7',
-})
+# Penyimpanan saldo pengguna dan transaksi
+user_balances = {}  # {user_id: {"idr_balance": 0, "axm_balance": 0}}
+pending_transactions = {}
 
-symbol = 'BNB/USDT'
-interval = '5m'
-amount_per_trade = 0.001
-grid_levels = 5
-grid_size = 0.01
-total_profit = 0  # Variabel untuk melacak profit keseluruhan
+# Mendapatkan harga AXM
+def get_axm_price():
+    try:
+        response = requests.get(AXM_PRICE_API_URL)
+        response.raise_for_status()
+        data = response.json()
+        return data["axiome"]["usd"]
+    except Exception as e:
+        logging.error(f"Gagal mendapatkan harga AXM: {e}")
+        return 0.0
 
-# Fungsi untuk mengecek saldo USDT
-def check_usdt_balance():
-    balance = exchange.fetch_balance()
-    usdt_balance = balance.get('total', {}).get('USDT', 0)
-    if usdt_balance < amount_per_trade * grid_levels:
-        logging.info(f"Saldo USDT tidak mencukupi: {usdt_balance} USDT. Tambahkan saldo untuk memulai trading.")
-        return False
-    else:
-        logging.info(f"Saldo USDT mencukupi: {usdt_balance} USDT.")
-        return True
+# Mulai bot
+def start(update: Update, context: CallbackContext):
+    reply_keyboard = [
+        ["💰 Saldo", "📤 Deposit"],
+        ["📥 Withdraw", "🛒 Beli AXM"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    update.message.reply_text(
+        "Selamat datang di bot jual/beli AXM! Pilih menu di bawah ini untuk melanjutkan.",
+        reply_markup=reply_markup
+    )
 
-# Fungsi untuk mengumpulkan data OHLCV
-def fetch_data():
-    ohlcv = exchange.fetch_ohlcv(symbol, interval)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+# 💰 Saldo
+def check_balance(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    balance = user_balances.get(user_id, {"idr_balance": 0, "axm_balance": 0})
 
-# Fungsi untuk menghitung indikator RSI
-def calculate_rsi(df, period=14):
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    reply_keyboard = [["🛒 Beli AXM", "Batalkan"]]
+    reply_markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
 
-# Fungsi grid trading
-def place_grid_orders(df):
-    last_price = df['close'].iloc[-1]
-    grid_prices = [last_price * (1 + grid_size * i) for i in range(-grid_levels, grid_levels + 1)]
-    for price in grid_prices:
-        logging.info(f"Grid order ditempatkan pada harga: {price:.4f} USDT")
+    update.message.reply_text(
+        f"ℹ Kamu memiliki saldo sebesar Rp {balance['idr_balance']} dan {balance['axm_balance']} AXM.",
+        reply_markup=reply_markup
+    )
 
-# Fungsi untuk trailing stop loss
-def trailing_stop_loss(current_price, entry_price, stop_loss_percent=0.02):
-    stop_loss_price = entry_price * (1 - stop_loss_percent)
-    if current_price <= stop_loss_price:
-        logging.info(f"Trailing Stop Loss triggered at {stop_loss_price:.4f} USDT.")
-        return True
-    return False
+# 📤 Deposit
+def deposit(update: Update, context: CallbackContext):
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Via USDT", callback_data='deposit_usdt')],
+        [InlineKeyboardButton("PayPal", callback_data='deposit_paypal')]
+    ])
+    update.message.reply_text("Silahkan pilih metode pembayaran di bawah ini:", reply_markup=reply_markup)
 
-# Fungsi utama
-def main():
-    global total_profit  # Menggunakan variabel global untuk menyimpan profit keseluruhan
-    if not check_usdt_balance():
+def handle_deposit_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    user_id = update.effective_user.id
+
+    if query.data == 'deposit_usdt':
+        query.edit_message_text("Silahkan masukkan nominal USD yang akan didepositkan:")
+        context.user_data['method'] = 'usdt'
+    elif query.data == 'deposit_paypal':
+        query.edit_message_text("Silahkan masukkan nominal USD yang akan didepositkan:")
+        context.user_data['method'] = 'paypal'
+
+def process_deposit(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    user_input = update.message.text.strip()
+
+    try:
+        nominal = float(user_input)
+        if nominal <= 0:
+            raise ValueError("Nominal harus lebih besar dari 0.")
+    except ValueError:
+        update.message.reply_text("Input tidak valid. Masukkan nominal dalam angka, misalnya: 50.")
         return
 
-    logging.info("Memulai bot trading untuk pasangan %s", symbol)
-    entry_price = None
+    method = context.user_data.get('method')
+    transaction_id = len(pending_transactions) + 1
+    fee = nominal * 0.012  # Contoh fee 1.2%
+    unique_code = int(str(user_id)[-3:])  # 3 digit unik
+    total_payment = nominal + fee + (unique_code / 1000)
 
-    while True:
-        try:
-            df = fetch_data()
-            df['RSI'] = calculate_rsi(df)
+    pending_transactions[transaction_id] = {
+        "user_id": user_id,
+        "amount": nominal,
+        "fee": fee,
+        "unique_code": unique_code,
+        "method": method,
+        "status": "waiting"
+    }
 
-            last_rsi = df['RSI'].iloc[-1]
-            last_price = df['close'].iloc[-1]
+    payment_info = ""
+    if method == 'usdt':
+        payment_info = f"Kirim {total_payment:.3f} USDT ke alamat berikut (BEP20):\n\n{USDT_BEP20_ADDRESS}\n\n"
+    elif method == 'paypal':
+        payment_info = f"Kirim {total_payment:.3f} USD ke alamat PayPal berikut:\n\n{PAYPAL_ADDRESS}\n\n"
 
-            if last_rsi < 30:
-                logging.info(f"Membeli pada harga {last_price:.4f} USDT dengan RSI {last_rsi:.2f}")
-                entry_price = last_price
-                place_grid_orders(df)
-            elif last_rsi > 70:
-                profit = last_price - entry_price if entry_price else 0
-                total_profit += profit
-                logging.info(f"Menjual pada harga {last_price:.4f} USDT dengan RSI {last_rsi:.2f}. Profit: {profit:.4f} USDT")
-                logging.info(f"Total Profit Keseluruhan: {total_profit:.4f} USDT")
-                entry_price = None  # Reset entry price setelah jual
+    context.bot.send_message(
+        chat_id=ADMIN_TELEGRAM_ID,
+        text=f"Konfirmasi Deposit:\nID Transaksi: {transaction_id}\nUser: {user_id}\nJumlah: {nominal:.2f} USD\nMetode: {method}\n\n/confirm {transaction_id} untuk konfirmasi\n/reject {transaction_id} untuk menolak"
+    )
 
-            if trailing_stop_loss(last_price, entry_price):
-                profit = last_price - entry_price if entry_price else 0
-                total_profit += profit
-                logging.info(f"Trailing stop loss dieksekusi. Menjual posisi pada harga {last_price:.4f}. Profit: {profit:.4f} USDT")
-                logging.info(f"Total Profit Keseluruhan: {total_profit:.4f} USDT")
-                entry_price = None  # Reset entry price setelah trailing stop loss
+    update.message.reply_text(
+        f"Permintaan Deposit Anda telah dikonfirmasi. {payment_info}"
+        f"Pastikan Anda mengirim jumlah dengan kode unik {unique_code} untuk mempermudah identifikasi."
+    )
 
-            time.sleep(10)
+# 🛒 Beli AXM
+def buy_axm(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    balance = user_balances.get(user_id, {"idr_balance": 0, "axm_balance": 0})
 
-        except ccxt.BaseError as e:
-            logging.error(f"Kesalahan pada API Exchange: {str(e)}")
-            time.sleep(5)
+    if balance['idr_balance'] <= 0:
+        update.message.reply_text("Saldo anda adalah Rp 0. Silahkan deposit terlebih dahulu.", reply_markup=ReplyKeyboardMarkup([["Batalkan"]], resize_keyboard=True))
+        return
 
-if __name__ == "__main__":
-    main()
+    update.message.reply_text("Silahkan masukkan nominal dalam Rp yang ingin dibelanjakan:")
+    context.user_data['menu'] = 'buy_axm'
+
+def process_buy_axm(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    user_input = update.message.text.strip()
+
+    try:
+        nominal = float(user_input)
+        if nominal <= 0:
+            raise ValueError("Nominal harus lebih besar dari 0.")
+    except ValueError:
+        update.message.reply_text("Input tidak valid. Masukkan nominal dalam angka, misalnya: 100000.")
+        return
+
+    axm_price = get_axm_price() * 15000  # Konversi ke IDR
+    axm_amount = nominal / axm_price
+    fee = axm_amount * 0.01
+    total_axm = axm_amount - fee
+
+    balance = user_balances.get(user_id, {"idr_balance": 0, "axm_balance": 0})
+    if balance['idr_balance'] < nominal:
+        update.message.reply_text("Saldo IDR Anda tidak mencukupi untuk transaksi ini.")
+        return
+
+    balance['idr_balance'] -= nominal
+    balance['axm_balance'] += total_axm
+    user_balances[user_id] = balance
+
+    update.message.reply_text(f"Pembelian berhasil! Anda menerima {total_axm:.2f} AXM.")
+
+# 📥 Withdraw
+def withdraw(update: Update, context: CallbackContext):
+    update.message.reply_text("Silahkan masukkan nominal AXM yang akan ditarik:")
+    context.user_data['menu'] = 'withdraw'
+
+def process_withdraw(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    user_input = update.message.text.strip()
+
+    try:
+        nominal = float(user_input)
+        if nominal <= 0:
+            raise ValueError("Nominal harus lebih besar dari 0.")
+    except ValueError:
+        update.message.reply_text("Input tidak valid. Masukkan nominal dalam angka, misalnya: 10.")
+        return
+
+    update.message.reply_text("Masukkan alamat AXM Anda:")
+    context.user_data['withdraw_amount'] = nominal
+
+def finalize_withdraw(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    wallet_address = update.message.text.strip()
+    nominal = context.user_data.get('withdraw_amount')
+
+    # Kirim notifikasi ke admin
+    context.bot.send_message(
+        chat_id=ADMIN_TELEGRAM_ID,
+        text=f"Konfirmasi Withdraw:\nUser: {user_id}\nJumlah: {nominal} AXM\nAlamat: {wallet_address}\n\n"
+             f"/confirmwd {user_id} untuk konfirmasi\n/rejectwd {user_id} untuk menolak"
+    )
+    update.message.reply_text(
+        "Permintaan withdraw Anda telah diteruskan ke admin. Silakan tunggu konfirmasi lebih lanjut."
+    )
+
+def confirm_withdraw(update: Update, context: CallbackContext):
+    try:
+        user_id = int(context.args[0])
+        txn_hash = context.args[1]  # Hash transaksi yang diberikan admin
+        nominal = context.user_data.get("withdraw_amount")
+
+        # Perbarui saldo pengguna
+        balance = user_balances.get(user_id, {"idr_balance": 0, "axm_balance": 0})
+        if balance["axm_balance"] < nominal:
+            update.message.reply_text("Saldo AXM pengguna tidak mencukupi untuk transaksi ini.")
+            return
+
+        balance["axm_balance"] -= nominal
+        user_balances[user_id] = balance
+
+        # Kirim notifikasi ke pengguna
+        context.bot.send_message(
+            chat_id=user_id,
+            text=f"Withdraw sebesar {nominal} AXM telah berhasil dikirim. Bukti transaksi:\n\n{txn_hash}"
+        )
+        update.message.reply_text(f"Withdraw untuk pengguna {user_id} telah berhasil dikonfirmasi.")
+    except (IndexError, ValueError):
+        update.message.reply_text("Gunakan format: /confirmwd <user_id> <txn_hash>")
+
+def reject_withdraw(update: Update, context: CallbackContext):
+    try:
+        user_id = int(context.args[0])
+
+        # Kirim notifikasi ke pengguna
+        context.bot.send_message(
+            chat_id=user_id,
+            text="Permintaan withdraw Anda telah ditolak oleh admin."
+        )
+        update.message.reply_text(f"Withdraw untuk pengguna {user_id} telah ditolak.")
+    except (IndexError, ValueError):
+        update.message.reply_text("Gunakan format: /rejectwd <user_id>")
+
+def main():
+    updater = Updater(BOT_TOKEN)
+    dispatcher = updater.dispatcher
+
+    # Command handlers
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("buy", buy_axm))
+    dispatcher.add_handler(CommandHandler("deposit", deposit))
+    dispatcher.add_handler(CommandHandler("confirmwd", confirm_withdraw))
+    dispatcher.add_handler(CommandHandler("rejectwd", reject_withdraw))
+
+    # Callback query handler untuk deposit
+    dispatcher.add_handler(CallbackQueryHandler(handle_deposit_callback))
+
+    # Message handlers
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_buy_axm))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_deposit))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_withdraw))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, finalize_withdraw))
+
+    updater.start_polling()
+    updater.idle()
